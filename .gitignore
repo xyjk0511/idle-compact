@@ -1,0 +1,10 @@
+# Runtime and generated files
+.in_use/
+*.log
+node_modules/
+
+# Editor files
+.idea/
+.vscode/
+*.swp
+*~

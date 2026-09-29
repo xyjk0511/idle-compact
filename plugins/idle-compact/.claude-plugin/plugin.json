@@ -1,0 +1,10 @@
+{
+    "name": "idle-compact",
+    "description": "Compact once after 50 idle minutes, while the 1h prompt cache is still warm. Works in the desktop app and SDK sessions too.",
+    "version": "1.1.0",
+    "author": {
+        "name": "xyjk0511"
+    },
+    "homepage": "https://github.com/xyjk0511/idle-compact",
+    "license": "Apache-2.0"
+}

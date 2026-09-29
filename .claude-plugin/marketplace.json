@@ -1,0 +1,15 @@
+{
+    "name": "idle-compact",
+    "description": "idle-compact: compact an idle Claude Code conversation once, before its prompt cache goes cold.",
+    "owner": {
+        "name": "xyjk0511"
+    },
+    "plugins": [
+        {
+            "name": "idle-compact",
+            "source": "./plugins/idle-compact",
+            "description": "Compact once after 50 idle minutes, while the 1h prompt cache is still warm.",
+            "version": "1.1.0"
+        }
+    ]
+}

@@ -1,0 +1,14 @@
+idle-compact
+Copyright 2026 xyjk0511
+
+This product is derived from idle-compact in takahirom-claude-code-marketplace
+(https://github.com/takahirom/takahirom-claude-code-marketplace), by takahirom,
+licensed under the Apache License, Version 2.0.
+
+Changes from the original (plugins/idle-compact):
+  - On a headless host (Claude desktop app, SDK), where $.session.compact is
+    refused, the compaction is queued as a /compact turn instead.
+  - The prompt footer shows when the pending compaction will fire.
+  - On Windows, a balloon announces a finished idle compaction
+    (hooks/toast.ps1).
+  - Person-facing text follows the system language (Chinese or English).
