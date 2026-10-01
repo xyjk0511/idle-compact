@@ -6,9 +6,31 @@
 
 ## 安装
 
-从 Git 仓库获取本版本时，先安装 Git LFS，并在仓库根目录运行 `git lfs pull`，确认 `codex/plugins/idle-compact/runtime/codex.exe` 已下载为实际程序。安装时将下文的解压路径替换为本仓库 `codex` 目录的绝对路径；GitHub 的自动源码 ZIP 不保证包含 LFS 程序文件。
+前提：已安装并登录支持生命周期钩子的 Codex，`codex` 和 Node.js 20 或更新版本的 `node` 命令可用。推荐使用 Codex CLI 0.159.2 或更新的兼容版本；本包在 Windows x64、Codex CLI 0.159.2、Node.js 24.13.1 上检查。CLI 0.156.0 可以显示插件已安装，但现场检查未加载本插件的生命周期钩子，不能只凭安装列表判断可用。
 
-前提：已安装并登录支持生命周期钩子的 Codex CLI，`codex` 和 Node.js 20 或更新版本的 `node` 命令可用。本包在 Windows x64、Codex CLI 0.159.2、Node.js 24.13.1 上检查。
+### 从 GitHub 安装（推荐）
+
+安装 Git 和 Git LFS 后，先启用一次 LFS，再添加插件源并安装：
+
+```powershell
+git lfs install
+codex plugin marketplace add xyjk0511/idle-compact
+codex plugin add idle-compact@idle-compact
+```
+
+Codex 会从仓库根目录的 `.agents/plugins/marketplace.json` 识别本插件，并下载 Windows 修复版程序。安装时不要设置 `GIT_LFS_SKIP_SMUDGE=1` 或关闭 Git 的 LFS 下载过滤器。下载失败时先修复 Git LFS 或网络问题，再重新添加插件源；不要将 LFS 指针文本当作可执行程序。
+
+重启 Codex，在 `/hooks` 中检查并信任 `Stop`、`UserPromptSubmit`、`SessionStart`、`PreCompact` 四个钩子，然后核对：
+
+```powershell
+codex plugin list | Select-String 'idle-compact@idle-compact'
+```
+
+应显示 `installed, enabled`，版本 `1.2.0`。这是第三方 GitHub 插件源，不代表已上架 OpenAI 公共插件目录。
+
+### 从本地包安装
+
+从 Git 仓库手动克隆本版本时，先安装 Git LFS，并在仓库根目录运行 `git lfs pull`，确认 `codex/plugins/idle-compact/runtime/codex.exe` 已下载为实际程序。安装时将下文的解压路径替换为本仓库 `codex` 目录的绝对路径；GitHub 的自动源码 ZIP 不保证包含 LFS 程序文件。
 
 1. 解压到固定目录，例如 `D:\tools\idle-compact-codex`。安装后不要移动或删除这个源目录。
 2. 在 PowerShell 中运行，替换为实际解压路径：
@@ -29,7 +51,16 @@
 
 ### 已装旧版
 
-本包和旧版使用相同名称。升级前在相关会话发一条消息取消计时器，或等待计时器结束，然后运行：
+本包和旧版使用相同名称。升级前在相关会话发一条消息取消计时器，或等待计时器结束。将旧的本地插件源切换为 GitHub 源时，先确认 Git LFS 已启用，然后运行：
+
+```powershell
+codex plugin remove idle-compact@idle-compact
+codex plugin marketplace remove idle-compact
+codex plugin marketplace add xyjk0511/idle-compact
+codex plugin add idle-compact@idle-compact
+```
+
+如果继续使用本地包，改为：
 
 ```powershell
 codex plugin remove idle-compact@idle-compact

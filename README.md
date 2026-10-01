@@ -11,7 +11,7 @@ This is a fork of [takahirom's idle-compact](https://github.com/takahirom/takahi
 
 It never keeps the cache alive, polls, or retries: one timer per idle period, one compaction, then nothing until you send another message. Full details in the [plugin README](plugins/idle-compact/README.md).
 
-## Install
+## Install for Claude Code
 
 Function hooks are early access: set `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, for example in the `env` block of `~/.claude/settings.json`. Then:
 
@@ -30,17 +30,24 @@ If the upstream `idle-compact@takahirom-claude-code-marketplace` is installed, d
 
 The Codex 1.2.0 plugin lives in [`codex/`](codex/README.md), with its own
 marketplace, hooks, tests, and Windows runtime that preserves the tool prefix
-during compaction. The Windows executable is stored in Git LFS; install Git LFS
-and run `git lfs pull` after cloning this repository.
-
-For local installation, use the absolute path to the `codex` directory:
+during compaction. With Node.js 20+, a Codex CLI that supports lifecycle hooks
+(0.159.2 tested; 0.156.0 does not load these hooks),
+Git and Git LFS installed, enable LFS once and install directly from GitHub:
 
 ```powershell
-codex plugin marketplace add "D:\tools\idle-compact\codex"
+git lfs install
+codex plugin marketplace add xyjk0511/idle-compact
 codex plugin add idle-compact@idle-compact
 ```
 
-See the Codex README for hook trust, upgrades, settings, and compatibility limits.
+The repository's `.agents` marketplace points Codex at the Codex plugin;
+the `.claude-plugin` marketplace remains available to Claude Code.
+The Windows executable is stored in Git LFS and is downloaded during checkout.
+Do not set `GIT_LFS_SKIP_SMUDGE=1` during installation. Restart Codex, then review
+and trust the four hooks in `/hooks`; installation does not grant hook trust.
+See the Codex README for upgrading an existing local installation, settings,
+and compatibility limits. This is a third-party repository marketplace, not a
+listing in OpenAI's public plugin directory.
 
 ## License
 

@@ -1,0 +1,20 @@
+{
+  "name": "idle-compact",
+  "interface": {
+    "displayName": "Codex 闲置自动压缩"
+  },
+  "plugins": [
+    {
+      "name": "idle-compact",
+      "source": {
+        "source": "local",
+        "path": "./codex/plugins/idle-compact"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
