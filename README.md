@@ -26,6 +26,22 @@ If the upstream `idle-compact@takahirom-claude-code-marketplace` is installed, d
 
 长对话放着不管，等 1 小时缓存过期再回来，第一条消息要重新缓存整段上下文。这个插件在空闲 50 分钟、缓存还热的时候自动压缩一次，回来时从一个小而便宜的上下文开始。相比上游，这个版本在 Claude 桌面版里也能用，输入框底部会显示几点压缩，Windows 上压缩完会弹气泡，系统是中文就显示中文。安装命令见上方。
 
+## Codex version
+
+The Codex 1.2.0 plugin lives in [`codex/`](codex/README.md), with its own
+marketplace, hooks, tests, and Windows runtime that preserves the tool prefix
+during compaction. The Windows executable is stored in Git LFS; install Git LFS
+and run `git lfs pull` after cloning this repository.
+
+For local installation, use the absolute path to the `codex` directory:
+
+```powershell
+codex plugin marketplace add "D:\tools\idle-compact\codex"
+codex plugin add idle-compact@idle-compact
+```
+
+See the Codex README for hook trust, upgrades, settings, and compatibility limits.
+
 ## License
 
 [Apache-2.0](LICENSE). Derived from takahirom's idle-compact; see [NOTICE](NOTICE) for what changed.

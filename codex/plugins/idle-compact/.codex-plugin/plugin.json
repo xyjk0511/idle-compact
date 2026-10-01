@@ -1,0 +1,16 @@
+{
+  "name": "idle-compact",
+  "version": "1.2.0",
+  "description": "空闲后自动压缩一次 Codex 会话上下文。",
+  "author": { "name": "Local developer" },
+  "keywords": ["hooks", "compaction", "prompt-cache", "idle"],
+  "interface": {
+    "displayName": "Codex 闲置自动压缩",
+    "shortDescription": "默认空闲 25 分钟后压缩一次上下文",
+    "longDescription": "一轮任务结束后启动独立计时器；继续发消息时取消，持续工作的会话跳过，超时或失败时不重试。压缩会消耗模型额度，不保证缓存命中或费用节省。需要 Node.js 及本地 Codex 钩子信任。",
+    "developerName": "Local developer",
+    "category": "Developer Tools",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": ["只读检查 idle-compact 插件的安装状态、日志和最近回执，不触发压缩。"]
+  }
+}

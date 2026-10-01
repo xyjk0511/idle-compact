@@ -1,0 +1,307 @@
+diff --git a/codex-rs/core/src/client_common.rs b/codex-rs/core/src/client_common.rs
+index 4e76ac5..ccd4f27 100644
+--- a/codex-rs/core/src/client_common.rs
++++ b/codex-rs/core/src/client_common.rs
+@@ -31,6 +31,9 @@ pub struct Prompt {
+     /// Whether parallel tool calls are permitted for this prompt.
+     pub(crate) parallel_tool_calls: bool,
+ 
++    /// Preserve advertised tools while preventing calls during summarization.
++    pub(crate) disable_tool_calls: bool,
++
+     pub base_instructions: BaseInstructions,
+ 
+     /// Optional the output schema for the model's response.
+@@ -48,6 +51,7 @@ impl Default for Prompt {
+             input: Vec::new(),
+             tools: Arc::default(),
+             parallel_tool_calls: false,
++            disable_tool_calls: false,
+             base_instructions: BaseInstructions::default(),
+             output_schema: None,
+             output_schema_strict: true,
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index f5ac495..0cf35b4 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -991,7 +991,12 @@ impl ModelClient {
+             instructions,
+             input,
+             tools,
+-            tool_choice: "auto".to_string(),
++            tool_choice: if prompt.disable_tool_calls {
++                "none"
++            } else {
++                "auto"
++            }
++            .to_string(),
+             parallel_tool_calls: prompt.parallel_tool_calls && !model_info.use_responses_lite,
+             reasoning: Some(reasoning),
+             store: false,
+diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
+index a937b39..d099469 100644
+--- a/codex-rs/core/src/compact.rs
++++ b/codex-rs/core/src/compact.rs
+@@ -48,6 +48,7 @@ use codex_utils_output_truncation::TruncationPolicy;
+ use codex_utils_output_truncation::approx_token_count;
+ use codex_utils_output_truncation::truncate_text;
+ use futures::prelude::*;
++use tokio_util::sync::CancellationToken;
+ use tracing::error;
+ 
+ pub use codex_prompts::SUMMARIZATION_PROMPT;
+@@ -71,6 +72,11 @@ pub(crate) enum InitialContextInjection {
+     DoNotInject,
+ }
+ 
++enum CompactionStepContext {
++    Captured(Arc<StepContext>),
++    Capture(CancellationToken),
++}
++
+ /// Metadata for a new compaction checkpoint, kept separate from its replacement history.
+ ///
+ /// `Session::replace_compacted_history` assigns missing item IDs before constructing the persisted
+@@ -108,11 +114,12 @@ pub(crate) async fn build_compaction_initial_context(
+ 
+ pub(crate) async fn run_inline_auto_compact_task(
+     sess: Arc<Session>,
+-    turn_context: Arc<TurnContext>,
++    step_context: Arc<StepContext>,
+     initial_context_injection: InitialContextInjection,
+     reason: CompactionReason,
+     phase: CompactionPhase,
+ ) -> CodexResult<()> {
++    let turn_context = Arc::clone(&step_context.turn);
+     let prompt = turn_context
+         .config
+         .compact_prompt
+@@ -128,6 +135,7 @@ pub(crate) async fn run_inline_auto_compact_task(
+     run_compact_task_inner(
+         sess,
+         turn_context,
++        CompactionStepContext::Captured(step_context),
+         input,
+         initial_context_injection,
+         CompactionTrigger::Auto,
+@@ -142,11 +150,13 @@ pub(crate) async fn run_compact_task(
+     sess: Arc<Session>,
+     turn_context: Arc<TurnContext>,
+     input: Vec<UserInput>,
++    cancellation_token: CancellationToken,
+ ) -> CodexResult<()> {
+     sess.emit_turn_started(&turn_context).await;
+     run_compact_task_inner(
+         sess.clone(),
+         turn_context,
++        CompactionStepContext::Capture(cancellation_token),
+         input,
+         InitialContextInjection::DoNotInject,
+         CompactionTrigger::Manual,
+@@ -160,6 +170,7 @@ pub(crate) async fn run_compact_task(
+ async fn run_compact_task_inner(
+     sess: Arc<Session>,
+     turn_context: Arc<TurnContext>,
++    step_context: CompactionStepContext,
+     input: Vec<UserInput>,
+     initial_context_injection: InitialContextInjection,
+     trigger: CompactionTrigger,
+@@ -196,6 +207,7 @@ async fn run_compact_task_inner(
+     let result = run_compact_task_inner_impl(
+         Arc::clone(&sess),
+         Arc::clone(&turn_context),
++        step_context,
+         input,
+         initial_context_injection,
+         compaction_metadata,
+@@ -245,6 +257,7 @@ async fn run_compact_task_inner(
+ async fn run_compact_task_inner_impl(
+     sess: Arc<Session>,
+     turn_context: Arc<TurnContext>,
++    step_context: CompactionStepContext,
+     input: Vec<UserInput>,
+     initial_context_injection: InitialContextInjection,
+     compaction_metadata: CompactionTurnMetadata,
+@@ -265,6 +278,13 @@ async fn run_compact_task_inner_impl(
+     // Reuse one client session so turn-scoped state (sticky routing and websocket incremental
+     // request tracking) survives retries within this compact turn.
+     let mut client_session = sess.services.model_client.new_session();
++    let step_context = match step_context {
++        CompactionStepContext::Captured(step_context) => step_context,
++        CompactionStepContext::Capture(cancellation_token) => {
++            sess.capture_step_context(Arc::clone(&turn_context), &cancellation_token)
++                .await?
++        }
++    };
+     let compaction_response = loop {
+         // Clone is required because of the loop
+         let mut turn_input = history
+@@ -276,6 +296,9 @@ async fn run_compact_task_inner_impl(
+         let turn_input_len = turn_input.len();
+         let prompt = Prompt {
+             input: turn_input,
++            tools: step_context.tool_router.model_visible_specs(),
++            parallel_tool_calls: true,
++            disable_tool_calls: true,
+             base_instructions: sess.get_prompt_base_instructions().await,
+             cyber_access_program: turn_context.cyber_access_program,
+             ..Default::default()
+diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
+index 07d57f5..66f449e 100644
+--- a/codex-rs/core/src/client_tests.rs
++++ b/codex-rs/core/src/client_tests.rs
+@@ -1014,6 +1014,7 @@ fn responses_lite_prefix_ids_track_thread_and_payload() -> anyhow::Result<()> {
+     let mut model = test_model_info();
+     model.use_responses_lite = true;
+     let mut prompt = Prompt {
++        parallel_tool_calls: true,
+         base_instructions: BaseInstructions {
+             text: "base instructions".to_string(),
+             provenance: None,
+@@ -1064,6 +1065,14 @@ fn responses_lite_prefix_ids_track_thread_and_payload() -> anyhow::Result<()> {
+     );
+     assert_eq!(changed_tools.input[1], changed_instructions.input[1]);
+ 
++    prompt.disable_tool_calls = true;
++    let compact = build(&client, &prompt)?;
++    assert_eq!(compact.tool_choice, "none");
++    assert_eq!(compact.input, changed_tools.input);
++    assert_eq!(compact.tools, changed_tools.tools);
++    assert!(!compact.parallel_tool_calls);
++    assert_eq!(compact.parallel_tool_calls, changed_tools.parallel_tool_calls);
++
+     let independent = build(
+         &test_model_client_with_thread_id(ThreadId::new(), SessionSource::Cli),
+         &prompt,
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index b88b343..ca8a99d 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -1497,7 +1497,7 @@ async fn run_auto_compact(
+             );
+             run_inline_auto_compact_task(
+                 Arc::clone(sess),
+-                Arc::clone(turn_context),
++                Arc::clone(&step_context),
+                 initial_context_injection,
+                 reason,
+                 phase,
+@@ -1570,6 +1570,7 @@ pub(crate) fn build_prompt(
+         input,
+         tools: step_context.tool_router.model_visible_specs(),
+         parallel_tool_calls: true,
++        disable_tool_calls: false,
+         base_instructions,
+         output_schema: turn_context.final_output_json_schema.clone(),
+         output_schema_strict: !crate::guardian::is_basic_session_source(
+diff --git a/codex-rs/core/src/compact_remote_v2_attempt.rs b/codex-rs/core/src/compact_remote_v2_attempt.rs
+index 60b5b1b..df00f89 100644
+--- a/codex-rs/core/src/compact_remote_v2_attempt.rs
++++ b/codex-rs/core/src/compact_remote_v2_attempt.rs
+@@ -80,6 +80,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
+         input,
+         tools: tool_router.model_visible_specs(),
+         parallel_tool_calls: true,
++        disable_tool_calls: false,
+         base_instructions,
+         output_schema: None,
+         output_schema_strict: true,
+diff --git a/codex-rs/core/src/tasks/compact.rs b/codex-rs/core/src/tasks/compact.rs
+index 14913d9..b39957d 100644
+--- a/codex-rs/core/src/tasks/compact.rs
++++ b/codex-rs/core/src/tasks/compact.rs
+@@ -30,7 +30,7 @@ impl SessionTask for CompactTask {
+         session: Arc<Session>,
+         ctx: Arc<TurnContext>,
+         _input: Vec<TurnInput>,
+-        _cancellation_token: CancellationToken,
++        cancellation_token: CancellationToken,
+     ) -> SessionTaskResult {
+         let _profile_guard = ctx.turn_timing_state.begin_compaction();
+         if ctx.config.features.enabled(Feature::TokenBudget) {
+@@ -63,7 +63,7 @@ impl SessionTask for CompactTask {
+                     // Compaction prompt is synthesized; no UI element ranges to preserve.
+                     text_elements: Vec::new(),
+                 }];
+-                crate::compact::run_compact_task(session.clone(), ctx, input).await
++                crate::compact::run_compact_task(session.clone(), ctx, input, cancellation_token).await
+             }
+         };
+         if let Err(err) = result
+diff --git a/codex-rs/core/src/compact_tests.rs b/codex-rs/core/src/compact_tests.rs
+index 217d6b6..6449d93 100644
+--- a/codex-rs/core/src/compact_tests.rs
++++ b/codex-rs/core/src/compact_tests.rs
+@@ -23,6 +23,64 @@ use pretty_assertions::assert_eq;
+ use serde_json::json;
+ use test_case::test_case;
+ 
++#[tokio::test]
++async fn inline_local_compaction_keeps_captured_tool_specs() -> anyhow::Result<()> {
++    let server = responses::start_mock_server().await;
++    let provider = ModelProviderInfo::create_openai_provider(Some(format!("{}/v1", server.uri())));
++    let (session, turn, _events) = make_session_and_context_with_auth_and_config_and_rx(
++        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
++        Vec::new(),
++        move |config| {
++            config.model = Some("gpt-5.2".to_string());
++            config.model_provider = provider;
++            config.model_provider.supports_websockets = false;
++        },
++    )
++    .await;
++    // This tool exists only in the captured step, never in the live catalog.
++    // Recapturing the step would lose it and fail this request assertion.
++    let sentinel = codex_tools::ToolSpec::Freeform(codex_tools::FreeformTool {
++        name: "frozen_sentinel".to_string(),
++        description: "Frozen request-scoped tool.".to_string(),
++        defer_loading: None,
++        format: codex_tools::FreeformToolFormat {
++            r#type: "grammar".to_string(),
++            syntax: "lark".to_string(),
++            definition: "start: /.+/".to_string(),
++        },
++    });
++    let router = crate::tools::router::ToolRouter::from_parts(
++        crate::tools::registry::ToolRegistry::empty_for_test(),
++        vec![sentinel.clone()],
++        codex_protocol::openai_models::ToolMode::Direct,
++        std::collections::BTreeMap::new(),
++        None,
++        &[],
++    );
++    let step = StepContext::for_test(Arc::clone(&turn)).with_tool_router_for_test(Arc::new(router));
++    let mock = responses::mount_sse_once(
++        &server,
++        responses::sse(vec![
++            responses::ev_assistant_message("summary", "The prior work finished."),
++            responses::ev_completed("compact-frozen-step"),
++        ]),
++    )
++    .await;
++    run_inline_auto_compact_task(
++        session,
++        step,
++        InitialContextInjection::DoNotInject,
++        CompactionReason::ContextLimit,
++        CompactionPhase::MidTurn,
++    )
++    .await?;
++    let body = mock.single_request().body_json();
++    assert_eq!(body["tools"], serde_json::to_value(vec![sentinel])?);
++    assert_eq!(body["parallel_tool_calls"], true);
++    assert_eq!(body["tool_choice"], "none");
++    Ok(())
++}
++
+ #[test_case(true; "metadata enabled")]
+ #[test_case(false; "metadata disabled after capture")]
+ #[tokio::test]
+@@ -164,6 +222,7 @@ async fn local_compaction_respects_tool_metadata_state(
+             text: "Summarize the conversation.".to_string(),
+             text_elements: Vec::new(),
+         }],
++        tokio_util::sync::CancellationToken::new(),
+     )
+     .await?;
+ 

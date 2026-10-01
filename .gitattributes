@@ -1,1 +1,2 @@
 * text=auto eol=lf
+codex/plugins/idle-compact/runtime/codex.exe filter=lfs diff=lfs merge=lfs -text
