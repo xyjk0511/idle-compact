@@ -10,6 +10,7 @@
 import { spawn } from 'node:child_process'
 import { cacheHitLine, compactionIn, config, dataDir, lastUsage, log, readState, threadBusy, toastArgv, writeState } from './common.mjs'
 import { compactViaDesktop } from './desktop.mjs'
+import { desktopNativeAllowed } from './desktop-policy.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -170,9 +171,10 @@ async function main() {
       threadBusy(transcriptPath, Number(state.armedAt) + 60 * 1000)) return false
     return true
   }
+  const nativeDesktop = () => desktopNativeAllowed({ data: dataDir(), transcript: transcriptPath, runtime: process.env.CODEX_CLI_PATH })
   const viaDesktop = await compactViaDesktop(sessionId, {
-    probeOnly: settings.cacheSafeRuntime,
-    beforeCompact,
+    probeOnly: settings.cacheSafeRuntime && !nativeDesktop(),
+    beforeCompact: () => (!settings.cacheSafeRuntime || nativeDesktop()) && beforeCompact(),
   })
   if (viaDesktop === 'cancelled') {
     log('activity or settings changed during desktop discovery, skipped')
