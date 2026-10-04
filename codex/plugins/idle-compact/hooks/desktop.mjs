@@ -115,8 +115,9 @@ function connect(pipe, timeoutMs) {
 //   'compacted'   the owning desktop app accepted the compaction
 //   'no-owner'    the router answered, but no client has the thread open
 //   'unavailable' no desktop app (no pipe, or it did not answer)
+//   'cancelled'   activity invalidated the timer while discovering the owner
 // and throws when the owner refused, for example because a turn is running.
-export async function compactViaDesktop(threadId, { pipe = process.env.IDLE_COMPACT_IPC_PIPE || DEFAULT_PIPE, timeoutMs = 6000, probeOnly = false } = {}) {
+export async function compactViaDesktop(threadId, { pipe = process.env.IDLE_COMPACT_IPC_PIPE || DEFAULT_PIPE, timeoutMs = 6000, probeOnly = false, beforeCompact = () => true } = {}) {
   if (process.platform !== 'win32' && pipe === DEFAULT_PIPE) return 'unavailable'
   const socket = await connect(pipe, timeoutMs)
   if (!socket) return 'unavailable'
@@ -134,6 +135,7 @@ export async function compactViaDesktop(threadId, { pipe = process.env.IDLE_COMP
     }
 
     if (probeOnly) return 'owned'
+    if (!beforeCompact()) return 'cancelled'
     const compacted = await follower.request('thread-follower-compact-thread', { conversationId: threadId }, 120000)
     if (compacted.resultType === 'success') return 'compacted'
     if (compacted.error === 'timeout') throw new Error('the desktop app did not answer the compaction request; it may still be compacting')

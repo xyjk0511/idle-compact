@@ -277,8 +277,9 @@ test('toastArgv uses the bundled script, names the folder, and stays quiet witho
 })
 
 // A stand-in for the desktop app's IPC router plus the one client that owns
-// `owned`. `onCompact` runs when the owner is asked to compact.
-async function fakeDesktop({ owned, refuse = false, onCompact = () => {}, probe = false }) {
+// `owned`. `onOwnerDiscovery` runs before the owner-discovery reply, and
+// `onCompact` runs when the owner is asked to compact.
+async function fakeDesktop({ owned, refuse = false, onCompact = () => {}, onOwnerDiscovery = () => {}, probe = false }) {
   const net = await import('node:net')
   const { encodeFrame, decodeFrames } = await import('../hooks/desktop.mjs')
   const pipe = process.platform === 'win32'
@@ -299,7 +300,10 @@ async function fakeDesktop({ owned, refuse = false, onCompact = () => {}, probe 
           if (probe) socket.write(encodeFrame({ type: 'client-discovery-request', requestId: 'd-1', request: { method: 'thread-follower-start-turn', version: 2 } }))
         }
         else if (m.method === 'thread-owner-discovery') {
-          if (m.params.conversationId === owned && m.params.hostId === 'local') reply({ resultType: 'success', handledByClientId: 'owner' })
+          if (m.params.conversationId === owned && m.params.hostId === 'local') {
+            onOwnerDiscovery(m)
+            reply({ resultType: 'success', handledByClientId: 'owner' })
+          }
           else reply({ resultType: 'error', error: 'no-client-found' })
         } else if (m.method === 'thread-follower-compact-thread') {
           if (refuse) reply({ resultType: 'error', error: 'turn in progress' })
@@ -338,6 +342,21 @@ test('the desktop app compacts a thread it owns, asked as a follower', async () 
     assert.equal(compact.version, 1)
     assert.equal(compact.sourceClientId, 'c-1')
     assert.equal(compact.targetClientId, undefined)
+  } finally {
+    await desktop.close()
+  }
+})
+
+test('beforeCompact=false cancels without sending desktop compaction', async () => {
+  const { compactViaDesktop } = await import('../hooks/desktop.mjs')
+  const desktop = await fakeDesktop({ owned: 't-cancel' })
+  try {
+    const result = await compactViaDesktop('t-cancel', {
+      pipe: desktop.pipe,
+      beforeCompact: () => false,
+    })
+    const compactSent = desktop.seen.some((message) => message.method === 'thread-follower-compact-thread')
+    assert.deepEqual({ result, compactSent }, { result: 'cancelled', compactSent: false })
   } finally {
     await desktop.close()
   }
@@ -519,6 +538,74 @@ function desktopTimerSandbox(sessionId) {
   }))
   return { dir, armedAt }
 }
+
+test('owner discovery followed by a new prompt cancels timer compaction without fallback', async () => {
+  const sessionId = 'owner-discovery-new-prompt'
+  const { dir, armedAt } = desktopTimerSandbox(sessionId)
+  let cancelResult
+  const desktop = await fakeDesktop({
+    owned: sessionId,
+    onOwnerDiscovery: () => {
+      cancelResult = runHook('cancel.mjs', {
+        session_id: sessionId,
+        hook_event_name: 'UserPromptSubmit',
+      }, { PLUGIN_DATA: dir })
+    },
+  })
+  try {
+    const logText = await runTimer(dir, sessionId, 1, armedAt, armedAt + 60000, {
+      IDLE_COMPACT_IPC_PIPE: desktop.pipe,
+      IDLE_COMPACT_TOAST: '0',
+      IDLE_COMPACT_CONFIRM_MS: '100',
+      IDLE_COMPACT_CODEX: 'codex-must-not-run',
+    })
+    assert.deepEqual({
+      cancelExitCode: cancelResult?.status,
+      generation: readState(dir, sessionId).generation,
+      compactRequests: desktop.seen.filter((message) => message.method === 'thread-follower-compact-thread').length,
+      appServerFallback: /via app-server/.test(logText),
+      receiptExists: fs.existsSync(path.join(dir, 'state', sessionId + '.done.json')),
+    }, {
+      cancelExitCode: 0,
+      generation: 2,
+      compactRequests: 0,
+      appServerFallback: false,
+      receiptExists: false,
+    })
+  } finally {
+    await desktop.close()
+  }
+})
+
+test('owner discovery followed by a pause cancels timer compaction without fallback', async () => {
+  const sessionId = 'owner-discovery-pause'
+  const { dir, armedAt } = desktopTimerSandbox(sessionId)
+  const desktop = await fakeDesktop({
+    owned: sessionId,
+    onOwnerDiscovery: () => fs.writeFileSync(path.join(dir, 'paused'), ''),
+  })
+  try {
+    const logText = await runTimer(dir, sessionId, 1, armedAt, armedAt + 60000, {
+      IDLE_COMPACT_IPC_PIPE: desktop.pipe,
+      IDLE_COMPACT_TOAST: '0',
+      IDLE_COMPACT_CONFIRM_MS: '100',
+      IDLE_COMPACT_CODEX: 'codex-must-not-run',
+    })
+    assert.deepEqual({
+      paused: fs.existsSync(path.join(dir, 'paused')),
+      compactRequests: desktop.seen.filter((message) => message.method === 'thread-follower-compact-thread').length,
+      appServerFallback: /via app-server/.test(logText),
+      receiptExists: fs.existsSync(path.join(dir, 'state', sessionId + '.done.json')),
+    }, {
+      paused: true,
+      compactRequests: 0,
+      appServerFallback: false,
+      receiptExists: false,
+    })
+  } finally {
+    await desktop.close()
+  }
+})
 
 test('an accepted compaction that never shows up claims nothing', async () => {
   const desktop = await fakeDesktop({ owned: 's10' })

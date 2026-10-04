@@ -165,7 +165,19 @@ async function main() {
   // stays, so activity before this point still wins.
   writeState(sessionId, { ...readState(sessionId), pid: 0 })
   const offset = fileSize(transcriptPath)
-  const viaDesktop = await compactViaDesktop(sessionId, { probeOnly: settings.cacheSafeRuntime })
+  const beforeCompact = () => {
+    if (!stillCurrent() || config().disabled || Date.now() >= Number(latestAtArg) ||
+      threadBusy(transcriptPath, Number(state.armedAt) + 60 * 1000)) return false
+    return true
+  }
+  const viaDesktop = await compactViaDesktop(sessionId, {
+    probeOnly: settings.cacheSafeRuntime,
+    beforeCompact,
+  })
+  if (viaDesktop === 'cancelled') {
+    log('activity or settings changed during desktop discovery, skipped')
+    return
+  }
   if (viaDesktop === 'owned') {
     log('desktop still owns the thread; patched app-server cannot acquire it, skipped')
     return
@@ -182,6 +194,10 @@ async function main() {
     return
   }
 
+  if (!beforeCompact()) {
+    log('activity or settings changed during desktop discovery, skipped')
+    return
+  }
   log('fired after ' + minutes + ' min: desktop app ' + viaDesktop + ', compacting via app-server')
   if (await compactViaAppServer()) await toast()
 }
