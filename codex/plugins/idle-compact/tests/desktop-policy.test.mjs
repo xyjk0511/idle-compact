@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { desktopNativeAllowed, providerHash } from '../hooks/desktop-policy.mjs'
 
-test('desktop activation is bound to the verified provider, config and runtime', () => {
+function policyFixture() {
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'idle-native-policy-'))
   const configFile = path.join(data, 'config.toml')
   const transcript = path.join(data, 'rollout.jsonl')
@@ -17,7 +17,17 @@ test('desktop activation is bound to the verified provider, config and runtime',
     JSON.stringify({ type: 'turn_context', payload: { model } }) + '\n')
   rollout('native')
   const args = { data, transcript, runtime, configFile, runtimeVersion: 'codex-cli 0.160.0' }
+  fs.writeFileSync(path.join(data, 'desktop-native.json'), JSON.stringify({
+    runtime, version: args.runtimeVersion, configFile, provider: 'native', providerHash: providerHash(config, 'native'),
+  }))
+  return { data, configFile, transcript, runtime, config, rollout, args }
+}
+
+test('desktop activation is bound to the verified provider, config and runtime', () => {
+  const fixture = policyFixture()
+  const { data, configFile, transcript, runtime, config, rollout, args } = fixture
   try {
+    fs.unlinkSync(path.join(data, 'desktop-native.json'))
     assert.equal(desktopNativeAllowed(args), false)
     fs.writeFileSync(path.join(data, 'desktop-native.json'), JSON.stringify({
       runtime, version: args.runtimeVersion, configFile, provider: 'native', providerHash: providerHash(config, 'native'),
@@ -38,7 +48,22 @@ test('desktop activation is bound to the verified provider, config and runtime',
     assert.equal(desktopNativeAllowed(args), false)
     assert.equal(providerHash(config.replace('OpenAI', 'Other'), 'native'), null)
   } finally {
-    for (const file of ['config.toml', 'rollout.jsonl', 'desktop-native.json']) fs.unlinkSync(path.join(data, file))
-    fs.rmdirSync(data)
+    fs.rmSync(data, { recursive: true, force: true })
+  }
+})
+
+test('a provider switch cannot disappear between the transcript head and tail windows', () => {
+  const { data, transcript, args } = policyFixture()
+  try {
+    fs.writeFileSync(transcript,
+      JSON.stringify({ type: 'session_meta', payload: { model_provider: 'native' } }) + '\n' +
+      JSON.stringify({ type: 'event_msg', payload: { type: 'thread_settings_applied', model_provider_id: 'another' } }) + '\n')
+    const filler = JSON.stringify({ type: 'event_msg', payload: { type: 'token_count' }, padding: 'x'.repeat(4096) }) + '\n'
+    fs.appendFileSync(transcript, filler.repeat(1300))
+    fs.appendFileSync(transcript, JSON.stringify({ type: 'turn_context', payload: { model: 'gpt-6-luna' } }) + '\n')
+    assert.ok(fs.statSync(transcript).size > 5 * 1024 * 1024)
+    assert.equal(desktopNativeAllowed(args), false)
+  } finally {
+    fs.rmSync(data, { recursive: true, force: true })
   }
 })

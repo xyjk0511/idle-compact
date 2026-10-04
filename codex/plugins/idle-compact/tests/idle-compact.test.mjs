@@ -10,7 +10,8 @@ import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { providerHash } from '../hooks/desktop-policy.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const hook = (name) => path.join(here, '..', 'hooks', name)
@@ -67,6 +68,49 @@ function stopPayload(dir, sessionId, extra) {
     hook_event_name: 'Stop',
     stop_hook_active: false,
     ...extra,
+  }
+}
+
+function desktopTranscriptPrefix(provider = 'native', model = 'gpt-6-luna') {
+  return JSON.stringify({ type: 'session_meta', payload: { model_provider: provider } }) + '\n' +
+    JSON.stringify({ type: 'turn_context', payload: { model } }) + '\n'
+}
+
+function installDesktopPolicy(dir) {
+  const runtime = path.join(dir, 'codex.exe')
+  const configFile = path.join(dir, 'config.toml')
+  const preload = path.join(dir, 'runtime-version-preload.mjs')
+  const config = '[model_providers.native]\nname = "OpenAI"\nwire_api = "responses"\nbase_url = "http://127.0.0.1:10100/v1"\n'
+  fs.writeFileSync(runtime, '')
+  fs.writeFileSync(configFile, config)
+  fs.writeFileSync(path.join(dir, 'desktop-native.json'), JSON.stringify({
+    runtime,
+    version: 'codex-cli 0.160.0',
+    configFile,
+    provider: 'native',
+    providerHash: providerHash(config, 'native'),
+  }))
+  fs.writeFileSync(preload, `
+    import childProcess from 'node:child_process'
+    import { syncBuiltinESMExports } from 'node:module'
+    const original = childProcess.spawnSync
+    childProcess.spawnSync = function(file, args, options) {
+      if (file === ${JSON.stringify(runtime)} && args?.[0] === '--version') {
+        return { stdout: 'codex-cli 0.160.0\\n', stderr: '', status: 0, signal: null, pid: 0 }
+      }
+      return original.apply(this, arguments)
+    }
+    syncBuiltinESMExports()
+  `)
+}
+
+function desktopPolicyEnv(dir) {
+  const preload = pathToFileURL(path.join(dir, 'runtime-version-preload.mjs')).href
+  const option = '--import=' + JSON.stringify(preload)
+  return {
+    CODEX_HOME: dir,
+    CODEX_CLI_PATH: path.join(dir, 'codex.exe'),
+    NODE_OPTIONS: [process.env.NODE_OPTIONS, option].filter(Boolean).join(' '),
   }
 }
 
@@ -156,10 +200,11 @@ test('a timer created before persistent pause never starts compaction', async ()
 })
 
 async function runTimer(dir, sessionId, generation, dueAt, latestAt, extraEnv) {
+  const policyEnv = fs.existsSync(path.join(dir, 'desktop-native.json')) ? desktopPolicyEnv(dir) : {}
   const child = spawn(process.execPath, [
     hook('timer.mjs'), sessionId, String(generation), String(dueAt), String(latestAt),
     path.join(dir, 'rollout.jsonl'), dir,
-  ], { env: { ...process.env, PLUGIN_DATA: dir, ...extraEnv }, windowsHide: true })
+  ], { env: { ...process.env, PLUGIN_DATA: dir, ...policyEnv, ...extraEnv }, windowsHide: true })
   await new Promise((resolve) => child.on('exit', resolve))
   return fs.readFileSync(path.join(dir, 'idle-compact.log'), 'utf8')
 }
@@ -210,10 +255,16 @@ test('cache hit percent treats cached tokens as a subset of the input', async ()
   // must not be added together.
   assert.equal(cacheHitPercent({ inputTokens: 74808, cachedTokens: 74482, cacheWriteTokens: 0 }), 99)
   assert.equal(cacheHitPercent({ inputTokens: 0, cachedTokens: 0 }), null)
+  assert.equal(cacheHitPercent({ inputTokens: 100, cachedTokens: 0, cacheWriteTokens: 0 }), null)
+  assert.equal(cacheHitPercent({ inputTokens: 100, cachedTokens: 0, cacheWriteTokens: 20 }), 0)
   assert.equal(cacheHitPercent(null), null)
   assert.equal(
     cacheHitLine({ inputTokens: 100, cachedTokens: 95, cacheWriteTokens: 0 }),
     'compacted with a 95% cache hit (95 cached, 0 written, 5 uncached)',
+  )
+  assert.equal(
+    cacheHitLine({ inputTokens: 100, cachedTokens: 0, cacheWriteTokens: 0 }),
+    'cache-read accounting unavailable (100 input; rollout zero has no provenance)',
   )
 })
 
@@ -438,10 +489,10 @@ test('no desktop app means unavailable, and a refusal is an error', async () => 
 })
 
 test('the timer hands an open thread to the desktop app and waits for its record', async () => {
-  const dir = sandbox()
+  const { dir, armedAt } = desktopTimerSandbox('s9')
   const rollout = path.join(dir, 'rollout.jsonl')
   const line = (o) => JSON.stringify(o) + '\n'
-  fs.writeFileSync(rollout, line({ type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 1000, cached_input_tokens: 10 } } } }))
+  fs.appendFileSync(rollout, line({ type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 1000, cached_input_tokens: 10 } } } }))
   const desktop = await fakeDesktop({
     owned: 's9',
     // The order Codex writes: the summary call's usage, compacted, a zero-delta
@@ -453,11 +504,6 @@ test('the timer hands an open thread to the desktop app and waits for its record
       line({ type: 'event_msg', payload: { type: 'task_complete' } })), 300),
   })
   try {
-    const armedAt = Date.now()
-    fs.mkdirSync(path.join(dir, 'state'), { recursive: true })
-    fs.writeFileSync(path.join(dir, 'state', 's9.json'), JSON.stringify({
-      sessionId: 's9', generation: 1, armedAt, dueAt: armedAt, latestAt: armedAt + 60000, pid: 0,
-    }))
     const logText = await runTimer(dir, 's9', 1, armedAt, armedAt + 60000, {
       IDLE_COMPACT_IPC_PIPE: desktop.pipe, IDLE_COMPACT_TOAST: '0', IDLE_COMPACT_CODEX: 'codex-must-not-run',
     })
@@ -485,7 +531,7 @@ test('the PreCompact cancel set off by the compaction does not kill the timer th
   })
   try {
     const child = spawn(process.execPath, [hook('timer.mjs'), 's14', '1', String(armedAt), String(armedAt + 60000), rollout, dir], {
-      env: { ...process.env, PLUGIN_DATA: dir, IDLE_COMPACT_IPC_PIPE: desktop.pipe, IDLE_COMPACT_TOAST: '0', IDLE_COMPACT_CODEX: 'codex-must-not-run' },
+      env: { ...process.env, PLUGIN_DATA: dir, ...desktopPolicyEnv(dir), IDLE_COMPACT_IPC_PIPE: desktop.pipe, IDLE_COMPACT_TOAST: '0', IDLE_COMPACT_CODEX: 'codex-must-not-run' },
       windowsHide: true,
     })
     // Arming records the timer's pid, which is what cancel signals.
@@ -528,16 +574,37 @@ test('the receipt is the summary call just before the compacted record, confirme
   )
 })
 
-function desktopTimerSandbox(sessionId) {
+function desktopTimerSandbox(sessionId, { nativeReceipt = true } = {}) {
   const dir = sandbox()
   const armedAt = Date.now()
-  fs.writeFileSync(path.join(dir, 'rollout.jsonl'), '')
+  fs.writeFileSync(path.join(dir, 'rollout.jsonl'), desktopTranscriptPrefix())
+  if (nativeReceipt) installDesktopPolicy(dir)
   fs.mkdirSync(path.join(dir, 'state'), { recursive: true })
   fs.writeFileSync(path.join(dir, 'state', sessionId + '.json'), JSON.stringify({
     sessionId, generation: 1, armedAt, dueAt: armedAt, latestAt: armedAt + 60000, pid: 0,
   }))
   return { dir, armedAt }
 }
+
+test('an explicit app-server override does not bypass the desktop activation receipt', async () => {
+  const sessionId = 'owner-without-receipt'
+  const { dir, armedAt } = desktopTimerSandbox(sessionId, { nativeReceipt: false })
+  const desktop = await fakeDesktop({ owned: sessionId })
+  try {
+    const logText = await runTimer(dir, sessionId, 1, armedAt, armedAt + 60000, {
+      CODEX_CLI_PATH: 'unverified-desktop.exe',
+      IDLE_COMPACT_CODEX: process.execPath,
+      IDLE_COMPACT_IPC_PIPE: desktop.pipe,
+      IDLE_COMPACT_CONFIRM_MS: '100',
+      IDLE_COMPACT_TOAST: '0',
+    })
+    assert.match(logText, /desktop still owns the thread.*skipped/)
+    assert.equal(desktop.seen.some((message) => message.method === 'thread-follower-compact-thread'), false)
+    assert.equal(fs.existsSync(path.join(dir, 'state', sessionId + '.done.json')), false)
+  } finally {
+    await desktop.close()
+  }
+})
 
 test('owner discovery followed by a new prompt cancels timer compaction without fallback', async () => {
   const sessionId = 'owner-discovery-new-prompt'

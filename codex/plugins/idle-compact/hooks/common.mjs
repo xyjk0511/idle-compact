@@ -263,7 +263,7 @@ export function threadBusy(rolloutPath, since) {
 }
 
 // Percent of the last call's input that came from the prompt cache, or null
-// when the host recorded no input at all.
+// when the rollout cannot establish authoritative cache detail.
 //
 // In Codex token_count records, input_tokens is the whole input and
 // cached_input_tokens is the cached subset of it, so the two are not
@@ -271,17 +271,26 @@ export function threadBusy(rolloutPath, since) {
 export function cacheHitPercent(usage) {
   if (!usage) return null
   const total = usage.inputTokens || 0
-  if (!total) return null
-  return Math.floor(((usage.cachedTokens || 0) * 100) / total)
+  const cached = usage.cachedTokens || 0
+  const written = usage.cacheWriteTokens || 0
+  // Rollout token_count records carry no cache-provenance bit. A positive
+  // count cannot be a zero-default artifact, but an all-zero detail cannot be
+  // distinguished from bridge normalization and must stay unavailable.
+  if (!total || (!cached && !written)) return null
+  return Math.floor((cached * 100) / total)
 }
 
 export function cacheHitLine(usage) {
-  const percent = cacheHitPercent(usage)
-  if (percent === null) return null
+  if (!usage) return null
   const total = usage.inputTokens || 0
+  if (!total) return null
   const cached = usage.cachedTokens || 0
   const written = usage.cacheWriteTokens || 0
   const n = (x) => Number(x || 0).toLocaleString('en-US')
+  if (!cached && !written) {
+    return 'cache-read accounting unavailable (' + n(total) + ' input; rollout zero has no provenance)'
+  }
+  const percent = cacheHitPercent(usage)
   return 'compacted with a ' + percent + '% cache hit (' + n(cached) + ' cached, ' + n(written) + ' written, ' + n(total - cached) + ' uncached)'
 }
 

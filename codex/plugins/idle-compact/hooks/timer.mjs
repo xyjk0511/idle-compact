@@ -172,12 +172,23 @@ async function main() {
     return true
   }
   const nativeDesktop = () => desktopNativeAllowed({ data: dataDir(), transcript: transcriptPath, runtime: process.env.CODEX_CLI_PATH })
+  let desktopPolicyDenied = false
   const viaDesktop = await compactViaDesktop(sessionId, {
-    probeOnly: settings.cacheSafeRuntime && !nativeDesktop(),
-    beforeCompact: () => (!settings.cacheSafeRuntime || nativeDesktop()) && beforeCompact(),
+    // The standalone runtime selection says nothing about the already-running
+    // desktop owner. Check its route-specific receipt only after ownership is
+    // found, immediately before the irreversible follower request.
+    beforeCompact: () => {
+      if (!nativeDesktop()) {
+        desktopPolicyDenied = true
+        return false
+      }
+      return beforeCompact()
+    },
   })
   if (viaDesktop === 'cancelled') {
-    log('activity or settings changed during desktop discovery, skipped')
+    log(desktopPolicyDenied
+      ? 'desktop still owns the thread; native desktop compaction is not verified, skipped'
+      : 'activity or settings changed during desktop discovery, skipped')
     return
   }
   if (viaDesktop === 'owned') {
